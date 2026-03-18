@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UK Rail Board & Live Stream</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f4; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .input-group { margin-bottom: 20px; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        input { padding: 10px; font-size: 16px; width: 100px; text-transform: uppercase; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; }
+        
+        /* Board Styles */
+        table { width: 100%; border-collapse: collapse; background: white; margin-bottom: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #333; color: white; }
+        .late { color: red; font-weight: bold; }
+        .ontime { color: green; }
+
+        /* Kafka Stream Log */
+        #stream-log {
+            background: #1e1e1e;
+            color: #00ff00;
+            font-family: monospace;
+            padding: 15px;
+            height: 200px;
+            overflow-y: scroll;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        h3 { margin-top: 0; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🇬🇧 UK Rail Live Departure Board</h1>
+
+    <div class="input-group">
+        <label>Enter Station CRS (e.g., EUS, MAN, KGX): </label>
+        <input type="text" id="crsInput" value="EUS" maxlength="3">
+        <button onclick="getBoard()">Load Board</button>
+    </div>
+
+    <div id="board-container">
+        <h3>Departure Board</h3>
+        <table id="boardTable">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Destination</th>
+                    <th>Platform</th>
+                    <th>Status</th>
+                    <th>Service Provider</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td colspan="5">Enter a station code and click load...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div>
+        <h3>Live Darwin Push Port Stream (Raw JSON)</h3>
+        <p>Real-time updates happening across the network:</p>
+        <div id="stream-log"></div>
+    </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+    // 1. Handle REST API (Departure Board)
+    async function getBoard() {
+        const crs = document.getElementById('crsInput').value;
+        const tbody = document.querySelector('#boardTable tbody');
+        tbody.innerHTML = '<tr><td colspan="5">Loading...</td></tr>';
+
+        try {
+            const response = await fetch(`/api/departures/${crs}`);
+            if (!response.ok) throw new Error('Network response was not ok');
+            const data = await response.json();
+
+            tbody.innerHTML = '';
+
+            // The API returns trainServices inside the object
+            // Check if trainServices exists and has a 'service' property
+            if (data.trainServices && data.trainServices.service) {
+                // Sometimes it's an array, sometimes a single object. Normalize it.
+                const services = Array.isArray(data.trainServices.service) 
+                    ? data.trainServices.service 
+                    : [data.trainServices.service];
+
+                services.forEach(train => {
+                    const row = document.createElement('tr');
+                    
+                    const std = train.std || 'N/A';
+                    // Handle destination being an array or object
+                    let destName = 'Unknown';
+                    if (train.destination && train.destination.location) {
+                         const destObj = Array.isArray(train.destination.location) ? train.destination.location[0] : train.destination.location;
+                         destName = destObj.locationName;
+                    }
+
+                    const plat = train.platform || '-';
+                    const etd = train.etd || 'N/A';
+                    const operator = train.operator || 'N/A';
+
+                    let statusClass = (etd === 'On time') ? 'ontime' : 'late';
+
+                    row.innerHTML = `
+                        <td>${std}</td>
+                        <td>${destName}</td>
+                        <td>${plat}</td>
+                        <td class="${statusClass}">${etd}</td>
+                        <td>${operator}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5">No departures found or station invalid.</td></tr>';
+            }
+        } catch (error) {
+            console.error(error);
+            tbody.innerHTML = '<tr><td colspan="5">Error loading data. Check console.</td></tr>';
+        }
+    }
+
+    // 2. Handle Kafka Stream (Socket.io)
+    const socket = io();
+    const logDiv = document.getElementById('stream-log');
+
+    socket.on('kafka-message', (msg) => {
+        const p = document.createElement('div');
+        // Simple timestamp
+        const time = new Date().toLocaleTimeString();
+        p.innerText = `[${time}] ${msg.substring(0, 150)}...`; // Truncate for display
+        logDiv.prepend(p);
+        
+        // Keep DOM clean - remove old messages
+        if(logDiv.children.length > 50) {
+            logDiv.removeChild(logDiv.lastChild);
+        }
+    });
+</script>
+
+</body>
+</html>
